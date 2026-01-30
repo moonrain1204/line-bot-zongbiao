@@ -16,7 +16,7 @@ app = Flask(__name__)
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
 GOOGLE_SHEET_ID = os.environ.get('GOOGLE_SHEET_ID')
-SHEET_GID = os.environ.get('SHEET_GID')
+SHEET_GID = os.environ.get('SHEET_GID', '0')  # 預設為 0
 IMGBB_API_KEY = "f65fa2212137d99c892644b1be26afac" 
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
@@ -25,7 +25,7 @@ FONT_PATH = "myfont.ttf"
 
 @app.route("/", methods=['GET'])
 def index():
-    return "<h1>機器人連線中！</h1>"
+    return "<h1>機器人已啟動</h1>"
 
 def upload_to_imgbb(image_path):
     try:
@@ -38,7 +38,7 @@ def upload_to_imgbb(image_path):
             res = requests.post(url, data=payload, timeout=20)
             if res.status_code == 200:
                 return res.json()['data']['url']
-            return f"ImgBB 錯誤碼: {res.status_code} - {res.text[:50]}"
+            return f"ImgBB 錯誤: {res.status_code}"
     except Exception as e:
         return f"ImgBB 連線異常: {str(e)}"
 
@@ -49,7 +49,6 @@ def create_table_image_pil(df):
     headers = ["排序", "日期", "店別", "型號", "電話", "地址", "問題與故障描述"]
     rows_data.append((headers, 1, False)) 
     
-    # 強制將所有內容轉為字串
     df = df.astype(str)
     
     for _, row in df.iterrows():
@@ -112,36 +111,42 @@ def handle_message(event):
     msg = event.message.text.strip()
     if msg == "總表":
         try:
-            # Step 1: 讀取資料 - 關鍵修正：改為 /d/e/ 開頭的發佈版網址
-            url = f"https://docs.google.com/spreadsheets/d/e/{GOOGLE_SHEET_ID}/pub?gid={SHEET_GID}&output=csv"
-            df = pd.read_csv(url, encoding='utf-8-sig', on_bad_lines='skip') 
+            # --- 關鍵修正：確保網址格式能正確讀取發佈版內容 ---
+            # 針對發佈版，移除 /pubhtml 結尾，改用 /pub?output=csv
+            clean_id = GOOGLE_SHEET_ID.strip()
+            url = f"https://docs.google.com/spreadsheets/d/e/{clean_id}/pub?gid={SHEET_GID}&output=csv"
             
-            if not df.empty:
-                df.columns = df.iloc[0]
-                df = df.drop(df.index[0])
-            else:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="讀取成功，但表格內容是空的！"))
+            # 使用 requests 先測試連線，避免 pandas 直接報錯
+            response = requests.get(url, timeout=15)
+            if response.status_code != 200:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"[連線失敗] 狀態碼：{response.status_code}\n請檢查 Google 試算表是否已『發佈到網路』。"))
+                return
+            
+            # 讀取資料
+            from io import StringIO
+            df = pd.read_csv(StringIO(response.text), encoding='utf-8-sig', on_bad_lines='skip') 
+            
+            if df.empty:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="[成功讀取] 但目前表格內沒有資料。"))
                 return
 
-            # Step 2: 產圖
-            try:
-                img_path = create_table_image_pil(df)
-            except Exception as e_pil:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"產圖失敗：{str(e_pil)}"))
-                return
-            
-            # Step 3: 上傳
+            # 如果第一列是標題，則手動處理
+            df.columns = df.iloc[0]
+            df = df.drop(df.index[0])
+
+            # 產圖並上傳
+            img_path = create_table_image_pil(df)
             img_result = upload_to_imgbb(img_path)
             
             if img_result.startswith("http"):
                 line_bot_api.reply_message(event.reply_token, ImageSendMessage(img_result, img_result))
             else:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"圖片上傳失敗：{img_result}"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"[上傳錯誤] {img_result}"))
             
             if os.path.exists(img_path): os.remove(img_path)
             
-        except Exception as e_total:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"系統異常：{str(e_total)}"))
+        except Exception as e:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"[系統報錯] 網址連線異常。\n原因：{str(e)}"))
     else:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"連線正常！輸入的是：{msg}\n輸入「總表」可產生報表。"))
 
