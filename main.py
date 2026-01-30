@@ -12,7 +12,7 @@ import textwrap
 
 app = Flask(__name__)
 
-# --- 從環境變數讀取設定 ---
+# --- 設定區 ---
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
 GOOGLE_SHEET_ID = os.environ.get('GOOGLE_SHEET_ID')
@@ -21,12 +21,11 @@ IMGBB_API_KEY = "f65fa2212137d99c892644b1be26afac"
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
-# 確保 GitHub 根目錄有這個檔案
 FONT_PATH = "myfont.ttf" 
 
 @app.route("/", methods=['GET'])
 def index():
-    return "<h1>機器人運行中！</h1>"
+    return "<h1>機器人連線中！</h1>"
 
 def upload_to_imgbb(image_path):
     try:
@@ -39,27 +38,22 @@ def upload_to_imgbb(image_path):
             res = requests.post(url, data=payload, timeout=20)
             if res.status_code == 200:
                 return res.json()['data']['url']
-            return f"ImgBB 錯誤碼: {res.status_code}"
+            return f"ImgBB 錯誤: {res.status_code}"
     except Exception as e:
         return f"上傳異常: {str(e)}"
 
 def create_table_image_pil(df):
-    # 設定欄寬，確保地址與描述有足夠空間
     col_widths = [80, 160, 220, 150, 250, 550, 550] 
     line_height, padding = 45, 30
     rows_data = []
-    
-    # 手動加入標題
     headers = ["排序", "日期", "店別", "型號", "電話", "地址", "問題與故障描述"]
     rows_data.append((headers, 1, False)) 
     
     for _, row in df.iterrows():
         wrapped_row = []
         max_lines = 1
-        # 判斷 A 欄是否為空值（自動變色邏輯）
         val_a = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
         is_empty = (val_a == "" or val_a.lower() == "nan")
-        
         char_counts = [4, 10, 8, 10, 14, 22, 22] 
         for i in range(min(7, len(row))):
             text = str(row.iloc[i]) if pd.notna(row.iloc[i]) else ""
@@ -75,15 +69,14 @@ def create_table_image_pil(df):
     try:
         font = ImageFont.truetype(FONT_PATH, 28)
         h_font = ImageFont.truetype(FONT_PATH, 30)
-    except:
-        # 字體載入失敗時的保險機制
+    except Exception:
+        # 關鍵修正：如果字體讀取失敗，強制使用預設字體而非崩潰
         font = h_font = ImageFont.load_default()
 
     y = padding
     for r_idx, (text_list, m_lines, is_empty) in enumerate(rows_data):
         x = padding
         row_h = m_lines * line_height + 35
-        # 標題深綠，空值米黃，其餘白色
         if r_idx == 0:
             bg_color, text_color = (45, 90, 45), (255, 255, 255)
         elif is_empty:
@@ -114,37 +107,37 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    msg = event.message.text
+    msg = event.message.text.strip()
     if msg == "總表":
         try:
-            # 1. 讀取 Google 試算表
-            url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv&gid={SHEET_GID}"
-            df = pd.read_csv(url, encoding='utf-8-sig') 
+            # 1. 讀取資料
+            sheet_url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv&gid={SHEET_GID}"
+            df = pd.read_csv(sheet_url, encoding='utf-8-sig') 
             
-            # 修正：處理標題列
             if not df.empty:
                 df.columns = df.iloc[0]
                 df = df.drop(df.index[0])
             else:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="試算表內沒有任何資料。"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="[錯誤] 試算表目前是空的"))
                 return
 
             # 2. 產圖
             img_path = create_table_image_pil(df)
             
-            # 3. 上傳並回傳
+            # 3. 上傳
             img_result = upload_to_imgbb(img_path)
             
-            if img_result.startswith("http"):
+            if img_result and img_result.startswith("http"):
                 line_bot_api.reply_message(event.reply_token, ImageSendMessage(img_result, img_result))
             else:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"圖片上傳失敗：{img_result}"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"[上傳失敗] {img_result}"))
             
             if os.path.exists(img_path): os.remove(img_path)
+            
         except Exception as e:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"處理失敗：{str(e)}"))
+            # 強制回傳錯誤原因到 LINE，避免沒反應
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"[系統崩潰] 原因：{str(e)}"))
     else:
-        # 基礎回應，確認連線用
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"連線正常！輸入的是：{msg}\n輸入「總表」可產生報表。"))
 
 if __name__ == "__main__":
