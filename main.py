@@ -9,14 +9,15 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageSend
 from PIL import Image, ImageDraw, ImageFont
 import uuid
 import textwrap
+from io import StringIO
 
 app = Flask(__name__)
 
 # --- 設定區 ---
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
-GOOGLE_SHEET_ID = os.environ.get('GOOGLE_SHEET_ID')
-SHEET_GID = os.environ.get('SHEET_GID', '0')  # 預設為 0
+# 關鍵修正：直接讀取完整網址變數
+SHEET_URL = os.environ.get('SHEET_URL')
 IMGBB_API_KEY = "f65fa2212137d99c892644b1be26afac" 
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
@@ -25,7 +26,7 @@ FONT_PATH = "myfont.ttf"
 
 @app.route("/", methods=['GET'])
 def index():
-    return "<h1>機器人已啟動</h1>"
+    return "<h1>機器人已啟動 (絕對路徑版)</h1>"
 
 def upload_to_imgbb(image_path):
     try:
@@ -43,6 +44,7 @@ def upload_to_imgbb(image_path):
         return f"ImgBB 連線異常: {str(e)}"
 
 def create_table_image_pil(df):
+    # 設定欄寬與邊距
     col_widths = [80, 160, 220, 150, 250, 550, 550] 
     line_height, padding = 45, 30
     rows_data = []
@@ -54,8 +56,10 @@ def create_table_image_pil(df):
     for _, row in df.iterrows():
         wrapped_row = []
         max_lines = 1
+        # 判斷是否為空行
         val_a = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
-        is_empty = (val_a == "" or val_a.lower() == "nan" or val_a == "None")
+        is_empty = (val_a == "" or val_a.lower() == "nan" or val_a == "none")
+        
         char_counts = [4, 10, 8, 10, 14, 22, 22] 
         for i in range(min(7, len(row))):
             text = str(row.iloc[i]) if pd.notna(row.iloc[i]) else ""
@@ -64,6 +68,7 @@ def create_table_image_pil(df):
             max_lines = max(max_lines, len(lines))
         rows_data.append((wrapped_row, max_lines, is_empty))
 
+    # 計算總高度
     total_h = sum([m * line_height + 35 for _, m, _ in rows_data]) + (padding * 2)
     image = Image.new('RGB', (sum(col_widths) + padding * 2, int(total_h)), (255, 255, 255))
     draw = ImageDraw.Draw(image)
@@ -78,6 +83,7 @@ def create_table_image_pil(df):
     for r_idx, (text_list, m_lines, is_empty) in enumerate(rows_data):
         x = padding
         row_h = m_lines * line_height + 35
+        # 標題與空行顏色
         if r_idx == 0:
             bg_color, text_color = (45, 90, 45), (255, 255, 255)
         elif is_empty:
@@ -111,30 +117,31 @@ def handle_message(event):
     msg = event.message.text.strip()
     if msg == "總表":
         try:
-            # --- 關鍵修正：確保網址格式能正確讀取發佈版內容 ---
-            # 針對發佈版，移除 /pubhtml 結尾，改用 /pub?output=csv
-            clean_id = GOOGLE_SHEET_ID.strip()
-            url = f"https://docs.google.com/spreadsheets/d/e/{clean_id}/pub?gid={SHEET_GID}&output=csv"
-            
-            # 使用 requests 先測試連線，避免 pandas 直接報錯
-            response = requests.get(url, timeout=15)
+            # 1. 直接連線完整 CSV 網址
+            if not SHEET_URL:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="[設定錯誤] 遺失 SHEET_URL 變數。"))
+                return
+                
+            response = requests.get(SHEET_URL, timeout=20)
             if response.status_code != 200:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"[連線失敗] 狀態碼：{response.status_code}\n請檢查 Google 試算表是否已『發佈到網路』。"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"[連線失敗] 狀態碼：{response.status_code}\n請檢查試算表發佈設定。"))
                 return
             
-            # 讀取資料
-            from io import StringIO
+            # 2. 讀取並處理資料
             df = pd.read_csv(StringIO(response.text), encoding='utf-8-sig', on_bad_lines='skip') 
             
             if df.empty:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="[成功讀取] 但目前表格內沒有資料。"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="[讀取成功] 但表格目前無資料內容。"))
                 return
 
-            # 如果第一列是標題，則手動處理
-            df.columns = df.iloc[0]
-            df = df.drop(df.index[0])
+            # 如果第一列包含標題文字，則進行轉換
+            if "排序" in str(df.columns) or "日期" in str(df.columns):
+                pass # 已有標題
+            else:
+                df.columns = df.iloc[0]
+                df = df.drop(df.index[0])
 
-            # 產圖並上傳
+            # 3. 產圖與上傳
             img_path = create_table_image_pil(df)
             img_result = upload_to_imgbb(img_path)
             
@@ -146,9 +153,9 @@ def handle_message(event):
             if os.path.exists(img_path): os.remove(img_path)
             
         except Exception as e:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"[系統報錯] 網址連線異常。\n原因：{str(e)}"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"[系統報錯] 執行時發生問題。\n原因：{str(e)}"))
     else:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"連線正常！輸入的是：{msg}\n輸入「總表」可產生報表。"))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"機器人連線正常！\n輸入「總表」可產生報表。"))
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000)
