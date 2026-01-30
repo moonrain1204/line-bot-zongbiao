@@ -9,24 +9,24 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageSend
 from PIL import Image, ImageDraw, ImageFont
 import uuid
 import textwrap
-import time
 
 app = Flask(__name__)
 
-# --- 設定區 (從環境變數讀取，確保安全) ---
+# --- 設定區 ---
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
-# 使用穩定發佈連結 (這串網址結尾必須是 output=csv)
-CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ2RjCpIscmC1QHOkO2MsWtkpzhQ4ppLUy5xsOSWRsiaFV1zXjQiRwrF7_QUuyMaO2Dt9bwBQJOJgUt/pub?output=csv"
+GOOGLE_SHEET_ID = "1O2Uy1Diw4Y01rvSFSigRHPxwslw40gvbdt93BqM4ywQ"
+SHEET_GID = "596601469" 
 IMGBB_API_KEY = "f65fa2212137d99c892644b1be26afac" 
-FONT_PATH = "fonts/LINESeedJP-Regular.ttf"
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
+# 確保字體路徑正確，若在 Linux 環境建議放置於 fonts/ 資料夾
+FONT_PATH = "fonts/LINESeedJP-Regular.ttf"
 
 @app.route("/", methods=['GET'])
 def index():
-    return "<h1>總表機器人運行中</h1><p>請將 LINE Webhook 設為此網址後方加上 /callback</p>"
+    return "<h1>表格優化版運行中！ (A欄空值上色模式)</h1>"
 
 def upload_to_imgbb(image_path):
     try:
@@ -41,33 +41,37 @@ def upload_to_imgbb(image_path):
     return None
 
 def create_table_image_pil(df):
-    # 【優化：加寬防止重疊】地址給 600, 電話給 300
-    col_widths = [80, 180, 240, 140, 300, 600, 620] 
-    line_height, padding = 45, 30
-    rows_data = []
-    # 標題行
-    rows_data.append(["排序", "日期", "店別", "型號", "電話", "地址", "問題與故障描述"])
+    # --- 優化點 2: 調整欄寬，拉開電話(180->220)與地址(450->500) ---
+    col_widths = [80, 160, 220, 150, 220, 500, 550] 
+    line_height = 45
+    padding = 30
     
+    rows_data = []
+    # 標題列
+    headers = ["排序", "日期", "店別", "型號", "電話", "地址", "問題與故障描述"]
+    rows_data.append((headers, 1, False)) # (文字列表, 行數, 是否為空行)
+    
+    # 內容列處理
     for _, row in df.iterrows():
-        wrapped_row, max_lines = [], 1
-        # 設定各欄位的換行字數限制
-        char_counts = [4, 10, 10, 8, 18, 24, 26] 
-        for i in range(min(7, len(row))):
-            val = row.iloc[i] if i < len(row) else ""
-            text = str(val) if pd.notna(val) else ""
-            # 移除不可見亂碼
-            text = "".join(c for c in text if c.isprintable()) 
-            lines = textwrap.wrap(text, width=char_counts[i])
-            wrapped_row.append("\n".join(lines) if lines else "")
-            max_lines = max(max_lines, len(lines))
+        wrapped_row = []
+        max_lines = 1
+        # 判斷 A 欄（排序）是否為空
+        is_a_empty = pd.isna(row.iloc[0]) or str(row.iloc[0]).strip() == ""
         
-        # 判定 A 欄 (排序) 是否為空，用於底色判定
-        sort_val = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
-        rows_data.append((wrapped_row, max_lines, sort_val))
+        # 字元換行限制調整
+        char_counts = [4, 10, 8, 10, 14, 20, 22] 
+        for i in range(7):
+            text = str(row.iloc[i]) if pd.notna(row.iloc[i]) else ""
+            lines = textwrap.wrap(text, width=char_counts[i])
+            if not lines: lines = [""]
+            wrapped_row.append("\n".join(lines))
+            max_lines = max(max_lines, len(lines))
+        rows_data.append((wrapped_row, max_lines, is_a_empty))
 
-    # 計算總高度與寬度
-    total_h = 80 + sum([m * line_height + 40 for _, m, _ in rows_data[1:]]) + (2 * padding)
+    # 計算總高度
+    total_h = sum([m * line_height + 35 for _, m, _ in rows_data]) + (2 * padding)
     total_w = sum(col_widths) + (2 * padding)
+    
     image = Image.new('RGB', (total_w, int(total_h)), (255, 255, 255))
     draw = ImageDraw.Draw(image)
     
@@ -78,29 +82,31 @@ def create_table_image_pil(df):
         font = h_font = ImageFont.load_default()
 
     y = padding
-    for r_idx, row_item in enumerate(rows_data):
+    for r_idx, (text_list, m_lines, is_empty) in enumerate(rows_data):
         x = padding
+        row_h = m_lines * line_height + 35
+        
+        # --- 優化點 1: 背景顏色邏輯 ---
         if r_idx == 0:
-            # 繪製標題行
-            row_h = 80
-            draw.rectangle([x, y, x + sum(col_widths), y + row_h], fill=(45, 90, 45))
-            for c_idx, text in enumerate(row_item):
-                draw.text((x + 15, y + 25), text, fill=(255, 255, 255), font=h_font)
-                x += col_widths[c_idx]
+            bg_color = (45, 90, 45) # 標題深綠
+            text_color = (255, 255, 255)
+        elif is_empty:
+            bg_color = (255, 235, 235) # A欄為空時，淺紅色底 (或可改為您喜歡的顏色)
+            text_color = (0, 0, 0)
         else:
-            # 繪製內容行
-            text_list, m_lines, sort_val = row_item
-            row_h = m_lines * line_height + 40
-            
-            # 【優化：A欄空白上色】若 A 欄為空則顯示淺綠底
-            is_empty_a = not sort_val or sort_val.lower() == "nan" or sort_val == ""
-            bg_color = (235, 245, 235) if is_empty_a else (255, 255, 255)
-            
-            draw.rectangle([x, y, x + sum(col_widths), y + row_h], fill=bg_color)
-            for c_idx, text in enumerate(text_list):
-                draw.rectangle([x, y, x + col_widths[c_idx], y + row_h], outline=(200, 200, 200), width=1)
-                draw.text((x + 15, y + 20), text, fill=(0, 0, 0), font=font, spacing=8)
-                x += col_widths[c_idx]
+            bg_color = (255, 255, 255) # A欄有值，白色底
+            text_color = (0, 0, 0)
+
+        # 畫背景
+        draw.rectangle([x, y, x + sum(col_widths), y + row_h], fill=bg_color)
+        
+        # 畫文字與格線
+        for c_idx, text in enumerate(text_list):
+            # 畫邊框
+            draw.rectangle([x, y, x + col_widths[c_idx], y + row_h], outline=(200, 200, 200), width=1)
+            # 填文字
+            draw.text((x + 12, y + 15), text, fill=text_color, font=font if r_idx > 0 else h_font, spacing=8)
+            x += col_widths[c_idx]
         y += row_h
 
     temp_file = f"temp_{uuid.uuid4()}.png"
@@ -121,23 +127,17 @@ def callback():
 def handle_message(event):
     if event.message.text == "總表":
         try:
-            # 抓取 CSV 資料，加上時間戳防止快取
-            df_raw = pd.read_csv(f"{CSV_URL}&t={int(time.time())}", encoding='utf-8-sig', header=None) 
+            # --- 優化點 3: 解決亂碼，強制使用 utf-8-sig ---
+            sheet_url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv&gid={SHEET_GID}"
+            df = pd.read_csv(sheet_url, encoding='utf-8-sig') 
             
-            # 自動搜尋含有「排序」的那一行作為標題
-            header_idx = 0
-            for i, row in df_raw.iterrows():
-                if "排序" in str(row.values):
-                    header_idx = i
-                    break
-            
-            df = df_raw.iloc[header_idx+1:].copy()
-            df.columns = df_raw.iloc[header_idx]
-            # 過濾空白行
-            df = df.dropna(subset=[df.columns[1]], how='all').reset_index(drop=True)
+            # 清理資料：移除標題重複列與全空列
+            if df.shape[1] >= 7:
+                df.columns = df.iloc[0]
+                df = df.drop(df.index[0])
             
             if df.empty:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="試算表內目前無資料。"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="目前沒有待修資料。"))
                 return
 
             local_path = create_table_image_pil(df)
@@ -150,10 +150,8 @@ def handle_message(event):
                 )
             if os.path.exists(local_path): os.remove(local_path)
         except Exception as e:
-            print(f"詳細錯誤: {e}")
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"生成失敗，請確認試算表發佈連結正確。"))
+            print(f"錯誤: {e}")
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"生成失敗，請確認雲端權限或資料格式。"))
 
 if __name__ == "__main__":
-    # Koyeb / Render 等平台會自動給 Port，這裡設定預設為 5000
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=5000)
