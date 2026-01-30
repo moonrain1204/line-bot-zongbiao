@@ -21,43 +21,42 @@ IMGBB_API_KEY = "f65fa2212137d99c892644b1be26afac"
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
-
-# --- 這裡已經更新為您新改的檔名 ---
 FONT_PATH = "myfont.ttf" 
 
 @app.route("/", methods=['GET'])
 def index():
-    return "<h1>機器人運行中！請傳送『總表』或任意文字測試。</h1>"
+    return "<h1>機器人運行中！</h1>"
 
 def upload_to_imgbb(image_path):
     try:
         with open(image_path, "rb") as file:
-            payload = {"key": IMGBB_API_KEY, "image": base64.b64encode(file.read())}
-            res = requests.post("https://api.imgbb.com/1/upload", payload)
+            # 修正：ImgBB 上傳必須使用 multipart/form-data 格式
+            url = "https://api.imgbb.com/1/upload"
+            payload = {
+                "key": IMGBB_API_KEY,
+                "image": base64.b64encode(file.read()),
+            }
+            res = requests.post(url, data=payload, timeout=15)
             if res.status_code == 200:
                 return res.json()['data']['url']
+            else:
+                print(f"ImgBB 回傳錯誤: {res.text}")
     except Exception as e:
-        print(f"ImgBB上傳失敗: {e}")
+        print(f"上傳過程異常: {e}")
     return None
 
 def create_table_image_pil(df):
-    # 優化：設定欄位寬度，特別拉大地址與描述區塊
     col_widths = [80, 160, 220, 150, 250, 550, 550] 
     line_height, padding = 45, 30
     rows_data = []
-    
-    # 標題列
     headers = ["排序", "日期", "店別", "型號", "電話", "地址", "問題與故障描述"]
     rows_data.append((headers, 1, False)) 
     
     for _, row in df.iterrows():
         wrapped_row = []
         max_lines = 1
-        # 變色判斷：若 A 欄（排序）為空，則標記 is_empty 為 True
         val_a = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
         is_empty = (val_a == "" or val_a.lower() == "nan")
-        
-        # 換行字數限制
         char_counts = [4, 10, 8, 10, 14, 22, 22] 
         for i in range(min(7, len(row))):
             text = str(row.iloc[i]) if pd.notna(row.iloc[i]) else ""
@@ -70,7 +69,6 @@ def create_table_image_pil(df):
     image = Image.new('RGB', (sum(col_widths) + padding * 2, int(total_h)), (255, 255, 255))
     draw = ImageDraw.Draw(image)
     
-    # 載入字體，增加 try-except 確保不會當機
     try:
         font = ImageFont.truetype(FONT_PATH, 28)
         h_font = ImageFont.truetype(FONT_PATH, 30)
@@ -81,8 +79,6 @@ def create_table_image_pil(df):
     for r_idx, (text_list, m_lines, is_empty) in enumerate(rows_data):
         x = padding
         row_h = m_lines * line_height + 35
-        
-        # 顏色邏輯：標題深綠，A欄為空則米黃色底，其餘白色
         if r_idx == 0:
             bg_color, text_color = (45, 90, 45), (255, 255, 255)
         elif is_empty:
@@ -116,7 +112,6 @@ def handle_message(event):
     msg = event.message.text
     if msg == "總表":
         try:
-            # 讀取 Google 試算表，解決亂碼問題
             url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv&gid={SHEET_GID}"
             df = pd.read_csv(url, encoding='utf-8-sig') 
             if df.shape[1] >= 7:
@@ -128,11 +123,14 @@ def handle_message(event):
             
             if img_url:
                 line_bot_api.reply_message(event.reply_token, ImageSendMessage(img_url, img_url))
+            else:
+                # 關鍵防錯：上傳失敗時至少傳文字
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="圖片產生成功但上傳 ImgBB 失敗，請確認 API Key 是否過期。"))
+            
             if os.path.exists(img_path): os.remove(img_path)
         except Exception as e:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"生成總表失敗，請檢查權限或 Log。\n錯誤碼: {str(e)[:50]}"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"讀取試算表出錯: {str(e)[:100]}"))
     else:
-        # 測試回覆：確保連線與 Secret 正確
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"連線正常！輸入的是：{msg}\n輸入「總表」可產生報表。"))
 
 if __name__ == "__main__":
