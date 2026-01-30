@@ -49,7 +49,7 @@ def create_table_image_pil(df):
     headers = ["排序", "日期", "店別", "型號", "電話", "地址", "問題與故障描述"]
     rows_data.append((headers, 1, False)) 
     
-    # 強制將所有內容轉為字串，避免數字導致產圖失敗
+    # 強制將所有內容轉為字串
     df = df.astype(str)
     
     for _, row in df.iterrows():
@@ -112,11 +112,10 @@ def handle_message(event):
     msg = event.message.text.strip()
     if msg == "總表":
         try:
-            # Step 1: 讀取資料 - 網址已更新為穩定版格式
-            url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/pub?gid={SHEET_GID}&output=csv"
+            # Step 1: 讀取資料 - 關鍵修正：改為 /d/e/ 開頭的發佈版網址
+            url = f"https://docs.google.com/spreadsheets/d/e/{GOOGLE_SHEET_ID}/pub?gid={SHEET_GID}&output=csv"
             df = pd.read_csv(url, encoding='utf-8-sig', on_bad_lines='skip') 
             
-            # 確保處理標題列
             if not df.empty:
                 df.columns = df.iloc[0]
                 df = df.drop(df.index[0])
@@ -124,7 +123,7 @@ def handle_message(event):
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text="讀取成功，但表格內容是空的！"))
                 return
 
-            # Step 2: 產圖 (加上 Try 防止字體問題卡死)
+            # Step 2: 產圖
             try:
                 img_path = create_table_image_pil(df)
             except Exception as e_pil:
@@ -142,7 +141,6 @@ def handle_message(event):
             if os.path.exists(img_path): os.remove(img_path)
             
         except Exception as e_total:
-            # 顯示具體系統報錯原因
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"系統異常：{str(e_total)}"))
     else:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"連線正常！輸入的是：{msg}\n輸入「總表」可產生報表。"))
