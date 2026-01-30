@@ -21,12 +21,12 @@ IMGBB_API_KEY = "f65fa2212137d99c892644b1be26afac"
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
-# 確保字體路徑正確，若在 Linux 環境建議放置於 fonts/ 資料夾
-FONT_PATH = "fonts/LINESeedJP-Regular.ttf"
+# 確保字體路徑與 GitHub 上傳的一致
+FONT_PATH = "LINESeedJP-Regular.ttf" 
 
 @app.route("/", methods=['GET'])
 def index():
-    return "<h1>表格優化版運行中！ (A欄空值上色模式)</h1>"
+    return "<h1>表格優化版運行中！ (空值自動上色模式)</h1>"
 
 def upload_to_imgbb(image_path):
     try:
@@ -41,7 +41,8 @@ def upload_to_imgbb(image_path):
     return None
 
 def create_table_image_pil(df):
-    # --- 優化點 2: 調整欄寬，拉開電話(180->220)與地址(450->500) ---
+    # --- 優化點 2: 拉開電話與地址間距 ---
+    # 排序, 日期, 店別, 型號, 電話(220), 地址(500), 描述(550)
     col_widths = [80, 160, 220, 150, 220, 500, 550] 
     line_height = 45
     padding = 30
@@ -49,16 +50,17 @@ def create_table_image_pil(df):
     rows_data = []
     # 標題列
     headers = ["排序", "日期", "店別", "型號", "電話", "地址", "問題與故障描述"]
-    rows_data.append((headers, 1, False)) # (文字列表, 行數, 是否為空行)
+    rows_data.append((headers, 1, False)) 
     
     # 內容列處理
     for _, row in df.iterrows():
         wrapped_row = []
         max_lines = 1
-        # 判斷 A 欄（排序）是否為空
-        is_a_empty = pd.isna(row.iloc[0]) or str(row.iloc[0]).strip() == ""
+        # --- 優化點 1: 判斷 A 欄（排序）是否為空 ---
+        val_a = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+        is_a_empty = (val_a == "" or val_a.lower() == "nan")
         
-        # 字元換行限制調整
+        # 字元換行限制，確保地址與電話有足夠空間
         char_counts = [4, 10, 8, 10, 14, 20, 22] 
         for i in range(7):
             text = str(row.iloc[i]) if pd.notna(row.iloc[i]) else ""
@@ -68,7 +70,6 @@ def create_table_image_pil(df):
             max_lines = max(max_lines, len(lines))
         rows_data.append((wrapped_row, max_lines, is_a_empty))
 
-    # 計算總高度
     total_h = sum([m * line_height + 35 for _, m, _ in rows_data]) + (2 * padding)
     total_w = sum(col_widths) + (2 * padding)
     
@@ -76,6 +77,7 @@ def create_table_image_pil(df):
     draw = ImageDraw.Draw(image)
     
     try:
+        # 載入字體
         font = ImageFont.truetype(FONT_PATH, 28)
         h_font = ImageFont.truetype(FONT_PATH, 30)
     except:
@@ -91,21 +93,18 @@ def create_table_image_pil(df):
             bg_color = (45, 90, 45) # 標題深綠
             text_color = (255, 255, 255)
         elif is_empty:
-            bg_color = (255, 235, 235) # A欄為空時，淺紅色底 (或可改為您喜歡的顏色)
+            bg_color = (240, 240, 240) # A欄為空時，塗上淡灰色底
             text_color = (0, 0, 0)
         else:
-            bg_color = (255, 255, 255) # A欄有值，白色底
+            bg_color = (255, 255, 255) # A欄有值，純白底
             text_color = (0, 0, 0)
 
-        # 畫背景
         draw.rectangle([x, y, x + sum(col_widths), y + row_h], fill=bg_color)
         
-        # 畫文字與格線
         for c_idx, text in enumerate(text_list):
-            # 畫邊框
             draw.rectangle([x, y, x + col_widths[c_idx], y + row_h], outline=(200, 200, 200), width=1)
-            # 填文字
-            draw.text((x + 12, y + 15), text, fill=text_color, font=font if r_idx > 0 else h_font, spacing=8)
+            # --- 優化點 3: 增加左邊距防止文字貼邊 ---
+            draw.text((x + 15, y + 15), text, fill=text_color, font=font if r_idx > 0 else h_font, spacing=8)
             x += col_widths[c_idx]
         y += row_h
 
@@ -127,11 +126,11 @@ def callback():
 def handle_message(event):
     if event.message.text == "總表":
         try:
-            # --- 優化點 3: 解決亂碼，強制使用 utf-8-sig ---
+            # --- 優化點 3: 強制 utf-8-sig 解決亂碼 ---
             sheet_url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv&gid={SHEET_GID}"
             df = pd.read_csv(sheet_url, encoding='utf-8-sig') 
             
-            # 清理資料：移除標題重複列與全空列
+            # 清理第一列（通常是重複標題）
             if df.shape[1] >= 7:
                 df.columns = df.iloc[0]
                 df = df.drop(df.index[0])
@@ -150,8 +149,7 @@ def handle_message(event):
                 )
             if os.path.exists(local_path): os.remove(local_path)
         except Exception as e:
-            print(f"錯誤: {e}")
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"生成失敗，請確認雲端權限或資料格式。"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"生成失敗，請檢查資料格式。"))
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000)
