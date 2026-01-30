@@ -49,11 +49,14 @@ def create_table_image_pil(df):
     headers = ["排序", "日期", "店別", "型號", "電話", "地址", "問題與故障描述"]
     rows_data.append((headers, 1, False)) 
     
+    # 強制將所有內容轉為字串，避免數字導致產圖失敗
+    df = df.astype(str)
+    
     for _, row in df.iterrows():
         wrapped_row = []
         max_lines = 1
         val_a = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
-        is_empty = (val_a == "" or val_a.lower() == "nan")
+        is_empty = (val_a == "" or val_a.lower() == "nan" or val_a == "None")
         char_counts = [4, 10, 8, 10, 14, 22, 22] 
         for i in range(min(7, len(row))):
             text = str(row.iloc[i]) if pd.notna(row.iloc[i]) else ""
@@ -70,7 +73,6 @@ def create_table_image_pil(df):
         font = ImageFont.truetype(FONT_PATH, 28)
         h_font = ImageFont.truetype(FONT_PATH, 30)
     except:
-        # 關鍵保險：如果字體遺失，自動改用系統預設，避免程式當機
         font = h_font = ImageFont.load_default()
 
     y = padding
@@ -110,11 +112,11 @@ def handle_message(event):
     msg = event.message.text.strip()
     if msg == "總表":
         try:
-            # Step 1: 讀取資料
-            url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv&gid={SHEET_GID}"
-            df = pd.read_csv(url, encoding='utf-8-sig') 
+            # Step 1: 讀取資料 - 網址已更新為穩定版格式
+            url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/pub?gid={SHEET_GID}&output=csv"
+            df = pd.read_csv(url, encoding='utf-8-sig', on_bad_lines='skip') 
             
-            # 修正：確保處理標題列
+            # 確保處理標題列
             if not df.empty:
                 df.columns = df.iloc[0]
                 df = df.drop(df.index[0])
@@ -140,7 +142,7 @@ def handle_message(event):
             if os.path.exists(img_path): os.remove(img_path)
             
         except Exception as e_total:
-            # 這是最後一條防線，出任何事都會在 LINE 顯示
+            # 顯示具體系統報錯原因
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"系統異常：{str(e_total)}"))
     else:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"連線正常！輸入的是：{msg}\n輸入「總表」可產生報表。"))
