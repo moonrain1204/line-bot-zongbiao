@@ -35,17 +35,18 @@ def upload_to_imgbb(image_path):
                 "key": IMGBB_API_KEY,
                 "image": base64.b64encode(file.read()),
             }
-            res = requests.post(url, data=payload, timeout=15)
+            res = requests.post(url, data=payload, timeout=20) # 增加超時等待
             if res.status_code == 200:
                 return res.json()['data']['url']
-            return f"Error: {res.status_code}"
+            return f"ImgBB Error: {res.status_code} - {res.text[:50]}"
     except Exception as e:
-        return f"Exception: {str(e)}"
+        return f"Upload Exception: {str(e)}"
 
 def create_table_image_pil(df):
     col_widths = [80, 160, 220, 150, 250, 550, 550] 
     line_height, padding = 45, 30
     rows_data = []
+    # 標題
     headers = ["排序", "日期", "店別", "型號", "電話", "地址", "問題與故障描述"]
     rows_data.append((headers, 1, False)) 
     
@@ -69,8 +70,7 @@ def create_table_image_pil(df):
     try:
         font = ImageFont.truetype(FONT_PATH, 28)
         h_font = ImageFont.truetype(FONT_PATH, 30)
-    except Exception as e:
-        print(f"Font Load Error: {e}")
+    except:
         font = h_font = ImageFont.load_default()
 
     y = padding
@@ -111,10 +111,11 @@ def handle_message(event):
     if msg == "總表":
         try:
             # 1. 讀取資料
-            url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv&gid={SHEET_GID}"
-            df = pd.read_csv(url, encoding='utf-8-sig') 
+            sheet_url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv&gid={SHEET_GID}"
+            df = pd.read_csv(sheet_url, encoding='utf-8-sig') 
+            
             if df.empty:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="試算表是空的！"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="讀取成功但表內沒有資料。"))
                 return
 
             # 2. 產圖
@@ -126,11 +127,11 @@ def handle_message(event):
             if img_result.startswith("http"):
                 line_bot_api.reply_message(event.reply_token, ImageSendMessage(img_result, img_result))
             else:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"圖片上傳失敗：{img_result}"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"圖片上傳錯誤：\n{img_result}"))
             
             if os.path.exists(img_path): os.remove(img_path)
         except Exception as e:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"發生錯誤：{str(e)}"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"處理失敗，錯誤原因：\n{str(e)}"))
     else:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"連線正常！輸入的是：{msg}\n輸入「總表」可產生報表。"))
 
