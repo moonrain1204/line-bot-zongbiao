@@ -38,9 +38,9 @@ def upload_to_imgbb(image_path):
             res = requests.post(url, data=payload, timeout=20)
             if res.status_code == 200:
                 return res.json()['data']['url']
-            return f"ImgBB 錯誤: {res.status_code}"
+            return f"ImgBB 錯誤碼: {res.status_code} - {res.text[:50]}"
     except Exception as e:
-        return f"上傳異常: {str(e)}"
+        return f"ImgBB 連線異常: {str(e)}"
 
 def create_table_image_pil(df):
     col_widths = [80, 160, 220, 150, 250, 550, 550] 
@@ -69,8 +69,8 @@ def create_table_image_pil(df):
     try:
         font = ImageFont.truetype(FONT_PATH, 28)
         h_font = ImageFont.truetype(FONT_PATH, 30)
-    except Exception:
-        # 關鍵修正：如果字體讀取失敗，強制使用預設字體而非崩潰
+    except:
+        # 關鍵保險：如果字體遺失，自動改用系統預設，避免程式當機
         font = h_font = ImageFont.load_default()
 
     y = padding
@@ -110,33 +110,38 @@ def handle_message(event):
     msg = event.message.text.strip()
     if msg == "總表":
         try:
-            # 1. 讀取資料
-            sheet_url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv&gid={SHEET_GID}"
-            df = pd.read_csv(sheet_url, encoding='utf-8-sig') 
+            # Step 1: 讀取資料
+            url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv&gid={SHEET_GID}"
+            df = pd.read_csv(url, encoding='utf-8-sig') 
             
+            # 修正：確保處理標題列
             if not df.empty:
                 df.columns = df.iloc[0]
                 df = df.drop(df.index[0])
             else:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="[錯誤] 試算表目前是空的"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="讀取成功，但表格內容是空的！"))
                 return
 
-            # 2. 產圖
-            img_path = create_table_image_pil(df)
+            # Step 2: 產圖 (加上 Try 防止字體問題卡死)
+            try:
+                img_path = create_table_image_pil(df)
+            except Exception as e_pil:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"產圖失敗：{str(e_pil)}"))
+                return
             
-            # 3. 上傳
+            # Step 3: 上傳
             img_result = upload_to_imgbb(img_path)
             
-            if img_result and img_result.startswith("http"):
+            if img_result.startswith("http"):
                 line_bot_api.reply_message(event.reply_token, ImageSendMessage(img_result, img_result))
             else:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"[上傳失敗] {img_result}"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"圖片上傳失敗：{img_result}"))
             
             if os.path.exists(img_path): os.remove(img_path)
             
-        except Exception as e:
-            # 強制回傳錯誤原因到 LINE，避免沒反應
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"[系統崩潰] 原因：{str(e)}"))
+        except Exception as e_total:
+            # 這是最後一條防線，出任何事都會在 LINE 顯示
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"系統異常：{str(e_total)}"))
     else:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"連線正常！輸入的是：{msg}\n輸入「總表」可產生報表。"))
 
