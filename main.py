@@ -12,7 +12,7 @@ import textwrap
 
 app = Flask(__name__)
 
-# --- 從環境變數讀取設定 ---
+# --- 設定區 ---
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
 GOOGLE_SHEET_ID = os.environ.get('GOOGLE_SHEET_ID')
@@ -25,12 +25,11 @@ FONT_PATH = "myfont.ttf"
 
 @app.route("/", methods=['GET'])
 def index():
-    return "<h1>機器人運行中！</h1>"
+    return "<h1>機器人連線中！</h1>"
 
 def upload_to_imgbb(image_path):
     try:
         with open(image_path, "rb") as file:
-            # 修正：ImgBB 上傳必須使用 multipart/form-data 格式
             url = "https://api.imgbb.com/1/upload"
             payload = {
                 "key": IMGBB_API_KEY,
@@ -39,11 +38,9 @@ def upload_to_imgbb(image_path):
             res = requests.post(url, data=payload, timeout=15)
             if res.status_code == 200:
                 return res.json()['data']['url']
-            else:
-                print(f"ImgBB 回傳錯誤: {res.text}")
+            return f"Error: {res.status_code}"
     except Exception as e:
-        print(f"上傳過程異常: {e}")
-    return None
+        return f"Exception: {str(e)}"
 
 def create_table_image_pil(df):
     col_widths = [80, 160, 220, 150, 250, 550, 550] 
@@ -72,7 +69,8 @@ def create_table_image_pil(df):
     try:
         font = ImageFont.truetype(FONT_PATH, 28)
         h_font = ImageFont.truetype(FONT_PATH, 30)
-    except:
+    except Exception as e:
+        print(f"Font Load Error: {e}")
         font = h_font = ImageFont.load_default()
 
     y = padding
@@ -112,24 +110,27 @@ def handle_message(event):
     msg = event.message.text
     if msg == "總表":
         try:
+            # 1. 讀取資料
             url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv&gid={SHEET_GID}"
             df = pd.read_csv(url, encoding='utf-8-sig') 
-            if df.shape[1] >= 7:
-                df.columns = df.iloc[0]
-                df = df.drop(df.index[0])
-            
+            if df.empty:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="試算表是空的！"))
+                return
+
+            # 2. 產圖
             img_path = create_table_image_pil(df)
-            img_url = upload_to_imgbb(img_path)
             
-            if img_url:
-                line_bot_api.reply_message(event.reply_token, ImageSendMessage(img_url, img_url))
+            # 3. 上傳
+            img_result = upload_to_imgbb(img_path)
+            
+            if img_result.startswith("http"):
+                line_bot_api.reply_message(event.reply_token, ImageSendMessage(img_result, img_result))
             else:
-                # 關鍵防錯：上傳失敗時至少傳文字
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="圖片產生成功但上傳 ImgBB 失敗，請確認 API Key 是否過期。"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"圖片上傳失敗：{img_result}"))
             
             if os.path.exists(img_path): os.remove(img_path)
         except Exception as e:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"讀取試算表出錯: {str(e)[:100]}"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"發生錯誤：{str(e)}"))
     else:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"連線正常！輸入的是：{msg}\n輸入「總表」可產生報表。"))
 
