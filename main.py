@@ -27,7 +27,7 @@ FONT_PATH = os.path.join(BASE_DIR, "myfont.ttf")
 
 @app.route("/", methods=['GET'])
 def index():
-    return "機器人服務中 - 編碼優化版"
+    return "機器人服務中 - 最終優化版"
 
 def upload_to_imgbb(image_path):
     try:
@@ -47,17 +47,33 @@ def create_table_image_pil(df):
     headers = ["排序", "日期", "店別", "型號", "電話", "地址", "問題與故障描述"]
     rows_data.append((headers, 1))
     
-    # 強制清洗資料
+    # 強制清洗資料與處理排序顯示
     for _, row in df.iterrows():
         wrapped_row = []
         max_lines = 1
         char_counts = [4, 10, 8, 10, 12, 18, 18]
         for i in range(min(7, len(row))):
-            # 取得原始內容並過濾 nan
-            text = str(row.iloc[i]).replace("nan", "").strip()
+            val = row.iloc[i]
             
-            # 針對剩餘的小方塊符號進行簡單替換 (備援邏輯)
-            text = text.replace('\u3000', ' ').replace('\xa0', ' ')
+            # --- 修正 1：處理 A 欄 (排序) 去除小數點 ---
+            if i == 0:
+                try:
+                    text = str(int(float(val)))
+                except:
+                    text = str(val).replace("nan", "").strip()
+            else:
+                text = str(val).replace("nan", "").strip()
+            
+            # --- 修正 2：更強力的亂碼符號替換 ---
+            # 將常見導致方塊的特殊符號替換為通用符號
+            replacements = {
+                '\u3000': ' ', '\xa0': ' ', 
+                '\u2611': '[v]', '\u2610': '[ ]', 
+                '\u2715': 'x', '\u2716': 'x', 
+                '\uf06c': '*', '\ufb01': 'fi'
+            }
+            for old, new in replacements.items():
+                text = text.replace(old, new)
             
             lines = textwrap.wrap(text, width=char_counts[i])
             wrapped_row.append("\n".join(lines) if lines else "")
@@ -82,7 +98,6 @@ def create_table_image_pil(df):
         x = padding
         row_h = m_lines * line_height + 25
         
-        # 僅標題列使用深綠色，其餘純白，徹底解決底部黃塊問題
         bg = (45, 90, 45) if r_idx == 0 else (255, 255, 255)
         tc = (255, 255, 255) if r_idx == 0 else (0, 0, 0)
         
@@ -110,13 +125,12 @@ def handle_message(event):
     msg = event.message.text.strip()
     if msg == "總表":
         try:
-            # 加入 headers 模擬瀏覽器，增加連線穩定度
             res = requests.get(SHEET_URL, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
             res.encoding = 'utf-8-sig'
             
             df = pd.read_csv(StringIO(res.text), on_bad_lines='skip', header=0)
             
-            # --- 嚴格 A 欄過濾邏輯 ---
+            # 嚴格 A 欄過濾
             df = df[df.iloc[:, 0].notna()]
             df = df[df.iloc[:, 0].astype(str).str.strip() != ""]
             df = df[~df.iloc[:, 0].astype(str).str.lower().isin(["nan", "none", "0", "0.0"])]
@@ -125,7 +139,6 @@ def handle_message(event):
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text="目前試算表內無有效報修資料。"))
                 return
 
-            # 最多顯示 20 筆
             if len(df) > 20: df = df.head(20)
 
             img_path = create_table_image_pil(df)
@@ -134,13 +147,13 @@ def handle_message(event):
             if img_url and img_url.startswith("http"):
                 line_bot_api.reply_message(event.reply_token, ImageSendMessage(img_url, img_url))
             else:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="圖片上傳圖床失敗，請檢查網路。"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="圖片產生成功但傳送過程異常。"))
             
             if os.path.exists(img_path): os.remove(img_path)
-        except Exception as e:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"讀取資料異常，請稍後再試。"))
+        except Exception:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"資料讀取逾時或格式錯誤，請檢查試算表。"))
     else:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="連線正常！輸入「總表」產生報表。"))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="機器人在線中！請輸入「總表」。"))
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000)
