@@ -27,7 +27,7 @@ FONT_PATH = os.path.join(BASE_DIR, "myfont.ttf")
 
 @app.route("/", methods=['GET'])
 def index():
-    return "機器人服務中 - 最終優化版"
+    return "機器人服務中 - 欄位優化版"
 
 def upload_to_imgbb(image_path):
     try:
@@ -39,7 +39,9 @@ def upload_to_imgbb(image_path):
     except: return "UploadFail"
 
 def create_table_image_pil(df):
-    col_widths = [60, 130, 180, 130, 200, 400, 400] 
+    # --- 修正 1：加大 col_widths 寬度，避免日期與店別重疊 ---
+    # 原本 [60, 130, 180, ...] -> 改為 [60, 150, 220, ...]
+    col_widths = [60, 150, 220, 130, 200, 400, 450] 
     line_height, padding = 45, 25
     rows_data = []
     
@@ -51,11 +53,12 @@ def create_table_image_pil(df):
     for _, row in df.iterrows():
         wrapped_row = []
         max_lines = 1
-        char_counts = [4, 10, 8, 10, 12, 18, 18]
+        # 對應欄位的每行字數限制
+        char_counts = [4, 12, 12, 10, 12, 18, 20]
         for i in range(min(7, len(row))):
             val = row.iloc[i]
             
-            # --- 修正 1：處理 A 欄 (排序) 去除小數點 ---
+            # 處理 A 欄 (排序) 去除小數點
             if i == 0:
                 try:
                     text = str(int(float(val)))
@@ -64,17 +67,18 @@ def create_table_image_pil(df):
             else:
                 text = str(val).replace("nan", "").strip()
             
-            # --- 修正 2：更強力的亂碼符號替換 ---
-            # 將常見導致方塊的特殊符號替換為通用符號
+            # --- 修正 2：更全面的亂碼與隱形字元排除 ---
             replacements = {
-                '\u3000': ' ', '\xa0': ' ', 
+                '\u3000': ' ', '\xa0': ' ', '\r': '', '\t': ' ',
                 '\u2611': '[v]', '\u2610': '[ ]', 
                 '\u2715': 'x', '\u2716': 'x', 
-                '\uf06c': '*', '\ufb01': 'fi'
+                '\uf06c': '*', '\ufb01': 'fi',
+                '\\n': ' ', # 排除字串化的換行符
             }
             for old, new in replacements.items():
                 text = text.replace(old, new)
             
+            # 使用 textwrap 處理斷行
             lines = textwrap.wrap(text, width=char_counts[i])
             wrapped_row.append("\n".join(lines) if lines else "")
             max_lines = max(max_lines, len(lines))
@@ -104,7 +108,8 @@ def create_table_image_pil(df):
         draw.rectangle([x, y, x + sum(col_widths), y + row_h], fill=bg)
         for c_idx, text in enumerate(text_list):
             draw.rectangle([x, y, x + col_widths[c_idx], y + row_h], outline=(200, 200, 200))
-            draw.text((x + 10, y + 10), text, fill=tc, font=font if r_idx > 0 else h_font, spacing=8)
+            # 增加文字水平偏移 (x+12)，讓內容不緊貼邊線
+            draw.text((x + 12, y + 10), text, fill=tc, font=font if r_idx > 0 else h_font, spacing=8)
             x += col_widths[c_idx]
         y += row_h
 
@@ -147,11 +152,11 @@ def handle_message(event):
             if img_url and img_url.startswith("http"):
                 line_bot_api.reply_message(event.reply_token, ImageSendMessage(img_url, img_url))
             else:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="圖片產生成功但傳送過程異常。"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="圖片產生成功但圖床服務繁忙，請稍後。"))
             
             if os.path.exists(img_path): os.remove(img_path)
         except Exception:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"資料讀取逾時或格式錯誤，請檢查試算表。"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"系統連線繁忙，請重新輸入「總表」。"))
     else:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="機器人在線中！請輸入「總表」。"))
 
