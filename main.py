@@ -9,6 +9,7 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageSend
 from PIL import Image, ImageDraw, ImageFont
 import uuid
 import textwrap
+import re
 from io import StringIO
 
 app = Flask(__name__)
@@ -27,7 +28,7 @@ FONT_PATH = os.path.join(BASE_DIR, "myfont.ttf")
 
 @app.route("/", methods=['GET'])
 def index():
-    return "機器人服務中 - 欄位優化版"
+    return "機器人服務中 - 亂碼與寬度修正版"
 
 def upload_to_imgbb(image_path):
     try:
@@ -39,9 +40,8 @@ def upload_to_imgbb(image_path):
     except: return "UploadFail"
 
 def create_table_image_pil(df):
-    # --- 修正 1：加大 col_widths 寬度，避免日期與店別重疊 ---
-    # 原本 [60, 130, 180, ...] -> 改為 [60, 150, 220, ...]
-    col_widths = [60, 150, 220, 130, 200, 400, 450] 
+    # --- 修正：加大總寬度計算，確保右側不超出 ---
+    col_widths = [60, 150, 220, 130, 200, 400, 500] # 最後一欄加寬到 500
     line_height, padding = 45, 25
     rows_data = []
     
@@ -49,51 +49,52 @@ def create_table_image_pil(df):
     headers = ["排序", "日期", "店別", "型號", "電話", "地址", "問題與故障描述"]
     rows_data.append((headers, 1))
     
-    # 強制清洗資料與處理排序顯示
     for _, row in df.iterrows():
         wrapped_row = []
         max_lines = 1
-        # 對應欄位的每行字數限制
-        char_counts = [4, 12, 12, 10, 12, 18, 20]
+        # 對應欄位的每行字數限制 (根據新寬度調整)
+        char_counts = [4, 12, 12, 10, 12, 18, 22] 
         for i in range(min(7, len(row))):
             val = row.iloc[i]
             
-            # 處理 A 欄 (排序) 去除小數點
+            # 處理排序欄位去除 .0
             if i == 0:
-                try:
-                    text = str(int(float(val)))
-                except:
-                    text = str(val).replace("nan", "").strip()
+                try: text = str(int(float(val)))
+                except: text = str(val).replace("nan", "").strip()
             else:
                 text = str(val).replace("nan", "").strip()
             
-            # --- 修正 2：更全面的亂碼與隱形字元排除 ---
+            # --- 核心修正：強制移除所有非列印字元與常見亂碼字元 ---
+            # 1. 移除 ASCII 控制字元 (0-31)
+            text = "".join(ch for ch in text if ord(ch) >= 32 or ch == '\n')
+            # 2. 針對截圖中出現的方框符號 (常見於 Google Sheet 換行符號)
             replacements = {
                 '\u3000': ' ', '\xa0': ' ', '\r': '', '\t': ' ',
-                '\u2611': '[v]', '\u2610': '[ ]', 
-                '\u2715': 'x', '\u2716': 'x', 
-                '\uf06c': '*', '\ufb01': 'fi',
-                '\\n': ' ', # 排除字串化的換行符
+                '\u200b': '', '\u200c': '', '\u200d': '', '\ufeff': '',
+                '\\n': '\n' # 確保文字內的換行符號能正確運作
             }
             for old, new in replacements.items():
                 text = text.replace(old, new)
             
-            # 使用 textwrap 處理斷行
-            lines = textwrap.wrap(text, width=char_counts[i])
+            # 使用更穩定的斷行演算法
+            lines = []
+            for part in text.split('\n'):
+                lines.extend(textwrap.wrap(part, width=char_counts[i]))
+            
             wrapped_row.append("\n".join(lines) if lines else "")
             max_lines = max(max_lines, len(lines))
         rows_data.append((wrapped_row, max_lines))
 
+    # 寬度重新計算：總和 + 左右 padding
+    canvas_width = sum(col_widths) + (padding * 2) + 20 
     total_h = sum([m * line_height + 25 for _, m in rows_data]) + (padding * 2)
-    image = Image.new('RGB', (sum(col_widths) + padding * 2, int(total_h)), (255, 255, 255))
+    
+    image = Image.new('RGB', (int(canvas_width), int(total_h)), (255, 255, 255))
     draw = ImageDraw.Draw(image)
     
     try:
-        if os.path.exists(FONT_PATH):
-            font = ImageFont.truetype(FONT_PATH, 24)
-            h_font = ImageFont.truetype(FONT_PATH, 26)
-        else:
-            font = h_font = ImageFont.load_default()
+        font = ImageFont.truetype(FONT_PATH, 24) if os.path.exists(FONT_PATH) else ImageFont.load_default()
+        h_font = ImageFont.truetype(FONT_PATH, 26) if os.path.exists(FONT_PATH) else ImageFont.load_default()
     except:
         font = h_font = ImageFont.load_default()
 
@@ -105,10 +106,13 @@ def create_table_image_pil(df):
         bg = (45, 90, 45) if r_idx == 0 else (255, 255, 255)
         tc = (255, 255, 255) if r_idx == 0 else (0, 0, 0)
         
+        # 畫列背景
         draw.rectangle([x, y, x + sum(col_widths), y + row_h], fill=bg)
+        
         for c_idx, text in enumerate(text_list):
+            # 畫格子框
             draw.rectangle([x, y, x + col_widths[c_idx], y + row_h], outline=(200, 200, 200))
-            # 增加文字水平偏移 (x+12)，讓內容不緊貼邊線
+            # 填入文字
             draw.text((x + 12, y + 10), text, fill=tc, font=font if r_idx > 0 else h_font, spacing=8)
             x += col_widths[c_idx]
         y += row_h
@@ -132,10 +136,8 @@ def handle_message(event):
         try:
             res = requests.get(SHEET_URL, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
             res.encoding = 'utf-8-sig'
-            
             df = pd.read_csv(StringIO(res.text), on_bad_lines='skip', header=0)
             
-            # 嚴格 A 欄過濾
             df = df[df.iloc[:, 0].notna()]
             df = df[df.iloc[:, 0].astype(str).str.strip() != ""]
             df = df[~df.iloc[:, 0].astype(str).str.lower().isin(["nan", "none", "0", "0.0"])]
@@ -152,13 +154,13 @@ def handle_message(event):
             if img_url and img_url.startswith("http"):
                 line_bot_api.reply_message(event.reply_token, ImageSendMessage(img_url, img_url))
             else:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="圖片產生成功但圖床服務繁忙，請稍後。"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="圖片服務暫時繁忙，請稍後。"))
             
             if os.path.exists(img_path): os.remove(img_path)
         except Exception:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"系統連線繁忙，請重新輸入「總表」。"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"讀取失敗，請確認網路連線。"))
     else:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="機器人在線中！請輸入「總表」。"))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="連線正常！請輸入「總表」。"))
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000)
