@@ -44,20 +44,24 @@ def create_table_image_pil(df):
     line_height, padding = 45, 25
     rows_data = []
     
-    # 標題
+    # 標題 (固定字串，通常顯示正常)
     headers = ["排序", "日期", "店別", "型號", "電話", "地址", "問題與故障描述"]
     rows_data.append((headers, 1))
     
-    df = df.astype(str)
-    
-    # 核心繪圖邏輯：將資料轉為多行文字
+    # 強制將所有內容轉為純文字並處理潛在編碼錯誤
     for _, row in df.iterrows():
         wrapped_row = []
         max_lines = 1
         char_counts = [4, 10, 8, 10, 12, 18, 18]
         for i in range(min(7, len(row))):
-            text = str(row.iloc[i]).replace("nan", "").strip()
-            # textwrap 有助於中文斷行
+            # --- 核心修正：強制內容進行二次編碼轉換 ---
+            raw_val = str(row.iloc[i]).replace("nan", "").strip()
+            try:
+                # 嘗試將內容重新編碼為 utf-8 以修復下載時的損壞
+                text = raw_val.encode('utf-8').decode('utf-8')
+            except:
+                text = raw_val
+            
             lines = textwrap.wrap(text, width=char_counts[i])
             wrapped_row.append("\n".join(lines) if lines else "")
             max_lines = max(max_lines, len(lines))
@@ -68,10 +72,8 @@ def create_table_image_pil(df):
     image = Image.new('RGB', (sum(col_widths) + padding * 2, int(total_h)), (255, 255, 255))
     draw = ImageDraw.Draw(image)
     
-    # --- 關鍵修正：字體加載強化 ---
     try:
         if os.path.exists(FONT_PATH):
-            # 加入布林參數以強化加載 (針對 Linux 環境)
             font = ImageFont.truetype(FONT_PATH, 24)
             h_font = ImageFont.truetype(FONT_PATH, 26)
         else:
@@ -84,14 +86,14 @@ def create_table_image_pil(df):
         x = padding
         row_h = m_lines * line_height + 25
         
-        # 底色設定：標題深綠，內容純白 (解決底部黃塊問題)
+        # 底色設定：標題深綠，內容純白
         bg = (45, 90, 45) if r_idx == 0 else (255, 255, 255)
         tc = (255, 255, 255) if r_idx == 0 else (0, 0, 0)
         
         draw.rectangle([x, y, x + sum(col_widths), y + row_h], fill=bg)
         for c_idx, text in enumerate(text_list):
             draw.rectangle([x, y, x + col_widths[c_idx], y + row_h], outline=(200, 200, 200))
-            # 渲染文字：加入 spacing 參數優化顯示
+            # 渲染文字
             draw.text((x + 10, y + 10), text, fill=tc, font=font if r_idx > 0 else h_font, spacing=8)
             x += col_widths[c_idx]
         y += row_h
@@ -114,22 +116,24 @@ def handle_message(event):
     if msg == "總表":
         try:
             # 抓取 Google Sheet 資料
-            res = requests.get(SHEET_URL, timeout=15)
-            # 使用 utf-8-sig 處理 BOM 編碼
-            df = pd.read_csv(StringIO(res.text), encoding='utf-8-sig', on_bad_lines='skip', header=0)
+            headers_req = {'User-Agent': 'Mozilla/5.0'}
+            res = requests.get(SHEET_URL, headers=headers_req, timeout=15)
             
-            # --- 過濾 A 欄(第一欄)非空值 ---
-            # 確保第一欄位名稱正確或使用 index
+            # 關鍵修正：手動指定編碼為 utf-8-sig
+            res.encoding = 'utf-8-sig'
+            
+            df = pd.read_csv(StringIO(res.text), on_bad_lines='skip', header=0)
+            
+            # 過濾 A 欄(第一欄)非空值
             df = df[df.iloc[:, 0].notna()]
             df = df[df.iloc[:, 0].astype(str).str.strip() != ""]
-            # 移除常見的空字串內容
             df = df[~df.iloc[:, 0].astype(str).str.lower().isin(["nan", "none", "0", "0.0"])]
 
             if df.empty:
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text="目前無有效的報修資料。"))
                 return
 
-            # 安全限制：前 20 筆 (避免 Koyeb 記憶體超載)
+            # 安全限制：前 20 筆
             if len(df) > 20: df = df.head(20)
 
             # 產生圖片並上傳
@@ -142,8 +146,9 @@ def handle_message(event):
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text="圖片上傳圖床失敗，請檢查 API Key。"))
             
             if os.path.exists(img_path): os.remove(img_path)
-        except Exception:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="讀取資料失敗，請檢查 SHEET_URL 或網路發佈狀態。"))
+        except Exception as e:
+            # 這裡不遮蔽錯誤，方便偵測
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"讀取失敗: {str(e)[:50]}"))
     else:
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="連線正常！輸入「總表」產生報表。"))
 
