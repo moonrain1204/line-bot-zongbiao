@@ -25,7 +25,6 @@ line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 def get_sheet_client():
-    """檢查環境變數並連線"""
     creds_raw = os.environ.get('GOOGLE_CREDS')
     if not creds_raw:
         return "ERR_NO_CREDS (找不到 GOOGLE_CREDS 變數)"
@@ -37,8 +36,15 @@ def get_sheet_client():
     except Exception as e:
         return f"JSON_ERROR: {str(e)}"
 
+def get_font():
+    # 優先找您命名的 Linefonts.ttf
+    possible_names = ["Linefonts.ttf", "boldfonts.ttf", "myfont.ttf"]
+    for name in possible_names:
+        path = os.path.join(os.getcwd(), name)
+        if os.path.exists(path): return path
+    return None
+
 def create_table_image_pil(df):
-    """繪製 A 欄非空的總表圖片"""
     col_widths = [80, 160, 240, 160, 220, 580, 750] 
     line_height, padding = 55, 60 
     headers = ["排序", "日期", "店別", "型號", "電話", "地址", "問題與故障描述"]
@@ -50,6 +56,10 @@ def create_table_image_pil(df):
         char_counts = [5, 12, 12, 10, 15, 22, 28] 
         for i in range(len(headers)):
             text = str(row.iloc[i]).replace("nan", "").strip()
+            # 處理排序數字顯示
+            if i == 0 and text:
+                try: text = str(int(float(text)))
+                except: pass
             lines = textwrap.wrap(text, width=char_counts[i]) if text else [" "]
             wrapped_row.append("\n".join(lines))
             max_lines = max(max_lines, len(lines))
@@ -60,9 +70,8 @@ def create_table_image_pil(df):
     image = Image.new('RGB', (int(total_table_width + padding * 2), int(total_h)), (255, 255, 255))
     draw = ImageDraw.Draw(image)
     
-    # 字型設定
-    font_path = os.path.join(os.getcwd(), "boldfonts.ttf")
-    font = ImageFont.truetype(font_path, 28) if os.path.exists(font_path) else ImageFont.load_default()
+    font_path = get_font()
+    font = ImageFont.truetype(font_path, 28) if font_path else ImageFont.load_default()
 
     y = padding
     for r_idx, (text_list, m_lines) in enumerate(rows_data):
@@ -106,7 +115,7 @@ def handle_message(event):
             data = wks.get_all_values()
             df = pd.DataFrame(data[1:], columns=data[0])
             
-            # 【關鍵】過濾 A 欄非空的範圍
+            # 【關鍵】過濾 A 欄非空的資料
             display_df = df[df['排序'].str.strip() != ""].copy()
             
             if not display_df.empty:
@@ -118,10 +127,10 @@ def handle_message(event):
                 line_bot_api.reply_message(event.reply_token, ImageSendMessage(img_url, img_url))
                 if os.path.exists(img_path): os.remove(img_path)
             else:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="目前無待修資料(A欄皆為空)。"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="目前無待修資料。"))
 
     except Exception as e:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"執行錯誤: {e}"))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"執行失敗: {e}"))
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000)
