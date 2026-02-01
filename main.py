@@ -13,7 +13,6 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import json
-from io import StringIO
 
 app = Flask(__name__)
 
@@ -21,24 +20,20 @@ app = Flask(__name__)
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
 IMGBB_API_KEY = "f65fa2212137d99c892644b1be26afac" 
-SHEET_KEY = os.environ.get('SHEET_KEY') # 建議從環境變數讀取
+SHEET_KEY = os.environ.get('SHEET_KEY')
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 def get_sheet_client():
-    """連線至 Google Sheets API"""
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds_raw = os.environ.get('GOOGLE_CREDS')
-    if not creds_raw:
-        print("錯誤：找不到 GOOGLE_CREDS 環境變數")
-        return None
+    if not creds_raw: return None
     creds_json = json.loads(creds_raw)
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
     return gspread.authorize(creds)
 
 def get_font():
-    """取得字型檔路徑"""
     possible_names = ["boldfonts.ttf", "boldfonts.TTF", "Linefonts.ttf", "myfont.ttf"]
     for name in possible_names:
         path = os.path.join(os.getcwd(), name)
@@ -46,11 +41,9 @@ def get_font():
     return None
 
 def create_table_image_pil(df, highlight_store=None):
-    """繪製並生成表格圖片"""
     col_widths = [80, 160, 240, 160, 220, 580, 750] 
     line_height, padding = 55, 60 
     
-    # 標題列
     headers = ["排序", "日期", "店別", "型號", "電話", "地址", "問題與故障描述"]
     rows_data = [(headers, 1, None)]
     
@@ -61,7 +54,7 @@ def create_table_image_pil(df, highlight_store=None):
         for i in range(min(7, len(row))):
             val = row.iloc[i]
             text = str(val).replace("nan", "").strip()
-            if i == 0 and text: # 處理排序數字
+            if i == 0 and text:
                 try: text = str(int(float(text)))
                 except: pass
             
@@ -84,7 +77,6 @@ def create_table_image_pil(df, highlight_store=None):
     y = padding
     for r_idx, (text_list, m_lines, store_name) in enumerate(rows_data):
         row_h = m_lines * line_height + 45
-        # 完修或特定店別上底色
         if r_idx == 0: bg, tc = (45, 90, 45), (255, 255, 255)
         elif store_name == highlight_store: bg, tc = (255, 220, 180), (0, 0, 0)
         else: bg, tc = (255, 255, 255), (0, 0, 0)
@@ -102,7 +94,6 @@ def create_table_image_pil(df, highlight_store=None):
     return temp_file
 
 def reorder_sheet(wks):
-    """對 A 欄重新進行連續編號"""
     vals = wks.get_all_values()
     df = pd.DataFrame(vals[1:], columns=vals[0])
     count = 1
@@ -131,30 +122,26 @@ def handle_message(event):
         wks_info = sh.worksheet("永慶安裝資訊")
         highlight_store = None
 
-        # --- 處理完修 (減少內容) ---
+        # 1. 處理完修 (減少內容)
         if "完修" in msg:
             store_name = msg.split()[0]
             try:
                 cell = wks_repair.find(store_name)
-                # 確保找到的是待修中（A欄非空）
                 if wks_repair.cell(cell.row, 1).value:
-                    wks_repair.update_cell(cell.row, 1, "") # 清空排序
-                    wks_repair.update_cell(cell.row, 8, datetime.now().strftime("%Y/%m/%d")) # 假設 H 為完修日期
-                    wks_repair.update_cell(cell.row, 9, msg) # 假設 I 為備註
+                    wks_repair.update_cell(cell.row, 1, "")
+                    wks_repair.update_cell(cell.row, 8, datetime.now().strftime("%Y/%m/%d"))
+                    wks_repair.update_cell(cell.row, 9, msg)
                     highlight_store = store_name
                     reorder_sheet(wks_repair)
             except: pass
 
-        # --- 處理報修 (增加內容) ---
+        # 2. 處理報修 (增加內容)
         elif "報修" in msg:
             parts = msg.split()
             store_name = parts[0]
             issue = parts[1] if len(parts) > 1 else "報修"
-            
-            # 檢查重複 (邏輯 1)
             all_rows = wks_repair.get_all_records()
             is_dup = any(r['店別'] == store_name and str(r['排序']).strip() != "" for r in all_rows)
-            
             if not is_dup:
                 info_list = wks_info.get_all_records()
                 info = next((i for i in info_list if i['店別'] == store_name), None)
@@ -164,10 +151,11 @@ def handle_message(event):
                     wks_repair.append_row(new_row)
                     reorder_sheet(wks_repair)
 
-        # --- 產出總表圖片 ---
+        # 3. 處理「總表」或動作後的自動回傳
         if msg == "總表" or highlight_store or "報修" in msg:
             data = wks_repair.get_all_values()
             df = pd.DataFrame(data[1:], columns=data[0])
+            # 強制過濾 A 欄為空的行
             display_df = df[df['排序'].str.strip() != ""].copy()
             
             if not display_df.empty:
@@ -179,7 +167,7 @@ def handle_message(event):
                 line_bot_api.reply_message(event.reply_token, ImageSendMessage(img_url, img_url))
                 if os.path.exists(img_path): os.remove(img_path)
             else:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="目前無待修項目。"))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="目前暫無待修項目的排序數據。"))
 
     except Exception as e:
         print(f"Error: {e}")
